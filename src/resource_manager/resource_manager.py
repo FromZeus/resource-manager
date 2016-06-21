@@ -39,6 +39,7 @@ class FileObject(object):
         @type temporary: L{bool}
         '''
 
+        self._parent = None
         self.parent = parent
         self._path = os.path.abspath(path)
         self.temporary = temporary
@@ -101,11 +102,18 @@ class FileObject(object):
     def parent(self, value):
         if isinstance(value, DirectoryObject) and value != self._parent:
             self._parent = value
-            self.parent.add(self)
+            self.parent.append(self)
 
     @parent.deleter
     def parent(self):
         del self._parent
+
+    def unparent(self):
+        '''Remove FileObject from parent and set parent to None'''
+
+        if self.parent:
+            self.parent.pop(self.parent.index(self))
+            self._parent = None
 
     def create(self):
         '''Create file on the system'''
@@ -124,7 +132,7 @@ class FileObject(object):
 
         try:
             os.remove(self.path)
-            self.parent.delete(self)
+            self.unparent()
         except OSError as exc:
             log.error("Can't remove file")
             raise exc
@@ -182,7 +190,8 @@ class FileObject(object):
             log.error("Can't copy file")
             raise exc
 
-        return FileObject(abs_dst, self.parent if same_parent else None)
+        return FileObject(abs_dst, self.parent if same_parent else None,
+                          temporary=self.temporary)
 
     def md5(self):
         '''Get md5 hash sum of the file'''
@@ -227,6 +236,7 @@ class DirectoryObject(MutableSequence, object):
         @type temporary: L{bool}
         '''
 
+        self._parent = None
         self.parent = parent
         self._path = os.path.abspath(path)
         self.temporary = temporary
@@ -309,10 +319,18 @@ class DirectoryObject(MutableSequence, object):
     def parent(self, value):
         if isinstance(value, DirectoryObject) and value != self._parent:
             self._parent = value
+            self.parent.append(self)
 
     @parent.deleter
     def parent(self):
         del self._parent
+
+    def unparent(self):
+        '''Remove DirectoryObject from parent and set parent to None'''
+
+        if self.parent:
+            self.parent.pop(self.parent.index(self))
+            self._parent = None
 
     def create(self):
         '''Create directory on the system'''
@@ -329,6 +347,7 @@ class DirectoryObject(MutableSequence, object):
 
         try:
             shutil.rmtree(self.path)
+            self.unparent()
             for el in self.resources:
                 el.parent = None
         except IOError as exc:
@@ -365,8 +384,8 @@ class DirectoryObject(MutableSequence, object):
 
         abs_dst = os.path.abspath(dst)
         try:
-            os.renames(self.path, abs_dst)
-            self.path = abs_dst
+            os.rename(self.path, abs_dst)
+            self._path = abs_dst
         except OSError as exc:
             raise exc
 
@@ -388,7 +407,8 @@ class DirectoryObject(MutableSequence, object):
             log.error("Can't copy directory")
             raise exc
 
-        return DirectoryObject(abs_dst, self.parent if same_parent else None)
+        return DirectoryObject(abs_dst, self.parent if same_parent else None,
+                               temporary=self.temporary)
 
     # Collection methods start
 
@@ -397,18 +417,18 @@ class DirectoryObject(MutableSequence, object):
 
         if isinstance(resource, FileObject) or \
             isinstance(resource, DirectoryObject) and \
-                not self.index(resource):
+                self.index(resource) is None:
             self.resources.append(resource)
-            resource.parent = self
+            resource._parent = self
 
     def insert(self, index, resource):
         '''Insert a resource object into collection'''
 
         if isinstance(resource, FileObject) or \
             isinstance(resource, DirectoryObject) and \
-                not self.index(resource):
+                self.index(resource) is None:
             self.resources.insert(index, resource)
-            resource.parent = self
+            resource._parent = self
 
     def index(self, resource=None, path=None):
         '''Return the index of resource'''
@@ -417,13 +437,11 @@ class DirectoryObject(MutableSequence, object):
             if el == resource or path == el.path:
                 return el_idx
 
-        return None
-
     def pop(self, idx):
         '''Return resource on "idx" index and delete it then'''
 
-        self.resources[idx].parent = None
-        self.resources.pop(idx)
+        self.resources[idx]._parent = None
+        return self.resources.pop(idx)
 
     # Collection methods end
 
@@ -431,7 +449,7 @@ class DirectoryObject(MutableSequence, object):
 class ResourceManager(object):
     default_aliases = ["Mercury", "Venus", "Earth", "Mars", "Jupiter",
                        "Saturn", "Uranus", "Neptune", "Plutone"]
-    alias_n = {"file":0, "dir":0}
+    alias_n = {"file": 0, "dir": 0}
 
     def __init__(self, base_path="/tmp/resource-manager/", mode=0o740,
                  temporary=False, rand_prefix=False):
@@ -454,7 +472,7 @@ class ResourceManager(object):
         self.temporary = temporary
         self.resources = OrderedDict()
         DirectoryObject(self.base_path, mode)
-        self.prefix_path = tempfile.mkdtemp(prefix=self.base_path) \
+        self.prefix_path = tempfile.mkdtemp(prefix=self.base_path + "/") \
             if rand_prefix else self.base_path
 
     def __del__(self):
@@ -535,9 +553,9 @@ class ResourceManager(object):
     def open(self, alias, mode="r"):
         '''Open file at relative path'''
 
-        if self.file(alias):
+        if self.file(alias) is not None:
             try:
-                f = open(self.file(alias), mode)
+                f = open(self.file(alias).path, mode)
                 yield f
                 f.close()
             except IOError as exc:
@@ -567,11 +585,13 @@ class ResourceManager(object):
         '''
         Return absolute path instead of relative one
 
-        @param path: Relative path
+        @param path: Relative or absolute path
         @type path: L{str}
         '''
-
-        return os.path.abspath(os.path.join(self.prefix_path, path))
+        if path.startswith("/"):
+            return os.path.abspath(path)
+        else:
+            return os.path.abspath(os.path.join(self.prefix_path, path))
 
     def mkfile(self, alias=None, path=None, mode=0o600):
         '''
@@ -627,11 +647,13 @@ class ResourceManager(object):
         '''
         Change mode bits of the resource
 
+        @param alias: Alias name of the resource
+        @type alias: L{str}
         @param mode: Mode bits of the resource
         @type mode: L{int}
         '''
 
-        if self.resource(alias):
+        if self.resource(alias) is not None:
             self.resources[alias].chmod(mode)
 
     def rm(self, alias):
@@ -642,7 +664,7 @@ class ResourceManager(object):
         @type alias: L{str}
         '''
 
-        if self.resource(alias):
+        if self.resource(alias) is not None:
             self.resources[alias].remove()
             del self.resources[alias]
 
@@ -656,9 +678,9 @@ class ResourceManager(object):
         @type dst: L{str}
         '''
 
-        if self.resource(alias):
-            self._prepare(dst)
-            self.resources[alias].copy(dst)
+        if self.resource(alias) is not None:
+            self._prepare(self.abspath(dst))
+            self.resources[alias].copy(self.abspath(dst))
 
     def mv(self, alias, dst):
         '''
@@ -670,9 +692,9 @@ class ResourceManager(object):
         @type dst: L{str}
         '''
 
-        if self.resource(alias):
-            self._prepare(dst)
-            self.resources[alias].copy(dst)
+        if self.resource(alias) is not None:
+            self._prepare(self.abspath(dst))
+            self.resources[alias].copy(self.abspath(dst))
 
     def ls(self):
         '''List all the resources under prefix'''
