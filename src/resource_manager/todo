@@ -1,0 +1,4 @@
+Make `ls` method use relative directories, like `ls("rembo/test")`.
+Such way it should use DirectoryObject structure as list. Every directory at
+ResourceManager complies DirectoryObject, and file coplies FileObject. So,
+DirectoryObject have to list all his childs and that will be output of `ls`.

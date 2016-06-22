@@ -15,6 +15,17 @@ class TestFileObject(unittest.TestCase):
             traceback.print_exc()
             self.fail(exc)
 
+    def test_init_from_precreated(self):
+        try:
+            with open("test", "w") as f:
+                f.write("rembo test")
+            fo = FileObject("test", temporary=True)
+            if oct(os.stat("test").st_mode & 0o777) != oct(0o600):
+                raise Exception("Couldn't init from file")
+        except Exception as exc:
+            traceback.print_exc()
+            self.fail(exc)
+
     def test_del(self):
         try:
             fo = FileObject("test", temporary=True)

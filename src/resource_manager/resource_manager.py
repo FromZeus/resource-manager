@@ -47,7 +47,7 @@ class FileObject(object):
         self.file_path = re_url_long_head.search(self.path).group(0)
 
         if os.path.exists(self.path):
-            self._mode = os.stat(self.path).st_mode & 0o777
+            self.mode = mode
         else:
             self._mode = mode
             self.create()
@@ -245,7 +245,7 @@ class DirectoryObject(MutableSequence, object):
         self.resources = []
 
         if os.path.exists(self.path):
-            self._mode = os.stat(self.path).st_mode & 0o777
+            self.mode = mode
         else:
             self._mode = mode
             self.create()
@@ -451,7 +451,7 @@ class ResourceManager(object):
                        "Saturn", "Uranus", "Neptune", "Plutone"]
     alias_n = {"file": 0, "dir": 0}
 
-    def __init__(self, base_path="/tmp/resource-manager/", mode=0o740,
+    def __init__(self, base_path="/tmp/resource-manager/", mode=0o700,
                  temporary=False, rand_prefix=False):
         '''
         Initialize ResourceManger within the prefix path
@@ -567,6 +567,9 @@ class ResourceManager(object):
 
         try:
             shutil.rmtree(self.prefix_path)
+            for el in self.resources.values():
+                if os.path.exists(el.path):
+                    shutil.rmtree(el.path)
         except IOError as exc:
             log.error("Can't remove prefix path")
             raise exc
@@ -593,7 +596,7 @@ class ResourceManager(object):
         else:
             return os.path.abspath(os.path.join(self.prefix_path, path))
 
-    def mkfile(self, alias=None, path=None, mode=0o600):
+    def mkfile(self, alias=None, path=None, mode=0o600, temporary=False):
         '''
         Make the file within prefix path
 
@@ -616,9 +619,10 @@ class ResourceManager(object):
 
         abs_path = self.abspath(_path)
         self._prepare(abs_path)
-        self.resources[_alias] = FileObject(abs_path, mode)
+        self.resources[_alias] = FileObject(abs_path, mode=mode,
+                                            temporary=temporary)
 
-    def mkdir(self, alias=None, path=None, mode=0o700):
+    def mkdir(self, alias=None, path=None, mode=0o700, temporary=False):
         '''
         Make the directory within prefix path
 
@@ -641,7 +645,8 @@ class ResourceManager(object):
 
         abs_path = self.abspath(_path)
         self._prepare(abs_path)
-        self.resources[_alias] = DirectoryObject(abs_path, mode)
+        self.resources[_alias] = DirectoryObject(abs_path, mode=mode,
+                                                 temporary=temporary)
 
     def chmod(self, alias, mode):
         '''

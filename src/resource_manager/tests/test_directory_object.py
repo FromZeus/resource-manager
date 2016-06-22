@@ -15,6 +15,16 @@ class TestDirectoryObject(unittest.TestCase):
             traceback.print_exc()
             self.fail(exc)
 
+    def test_init_from_precreated(self):
+        try:
+            os.mkdir("test")
+            do = DirectoryObject("test", temporary=True)
+            if oct(os.stat("test").st_mode & 0o777) != oct(0o700):
+                raise Exception("Couldn't init from directory")
+        except Exception as exc:
+            traceback.print_exc()
+            self.fail(exc)
+
     def test_del(self):
         try:
             do = DirectoryObject("test", temporary=True)
