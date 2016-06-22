@@ -141,6 +141,8 @@ class TestResourceManager(unittest.TestCase):
         try:
             rm = ResourceManager(temporary=True, rand_prefix=True)
             rm.mkdir("rembo", "test1/test2/test3")
+            #import pdb
+            #pdb.set_trace()
             rm.rm("rembo")
             if rm.exists("test1/test2/test3"):
                 raise Exception("Directory hasn't been removed")

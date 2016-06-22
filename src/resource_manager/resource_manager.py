@@ -1,5 +1,5 @@
-from collections import OrderedDict
 from collections import MutableSequence
+from collections import MutableMapping
 from contextlib import contextmanager
 import os
 import shutil
@@ -25,7 +25,7 @@ CHUNK_SIZE = 65536
 
 
 class FileObject(object):
-    def __init__(self, path, parent=None, mode=0o600, temporary=False):
+    def __init__(self, path, mode=0o600, temporary=False, parent=None):
         '''
         Create new file or use already existing one
 
@@ -190,8 +190,8 @@ class FileObject(object):
             log.error("Can't copy file")
             raise exc
 
-        return FileObject(abs_dst, self.parent if same_parent else None,
-                          temporary=self.temporary)
+        return FileObject(abs_dst, mode, self.temporary,
+                          self.parent if same_parent else None)
 
     def md5(self):
         '''Get md5 hash sum of the file'''
@@ -221,7 +221,7 @@ class FileObject(object):
 
 
 class DirectoryObject(MutableSequence, object):
-    def __init__(self, path, parent=None, mode=0o700, temporary=False):
+    def __init__(self, path, mode=0o700, temporary=False, parent=None):
         '''
         Create new directory or use already existing one
 
@@ -407,8 +407,8 @@ class DirectoryObject(MutableSequence, object):
             log.error("Can't copy directory")
             raise exc
 
-        return DirectoryObject(abs_dst, self.parent if same_parent else None,
-                               temporary=self.temporary)
+        return DirectoryObject(abs_dst, self.mode, self.temporary,
+                               self.parent if same_parent else None)
 
     # Collection methods start
 
@@ -446,6 +446,37 @@ class DirectoryObject(MutableSequence, object):
     # Collection methods end
 
 
+class AliasedDirectoryObject(MutableMapping, DirectoryObject, object):
+    def __init__(self, path, mode=0o700, temporary=False, parent=None):
+        self.aliases = dict()
+        DirectoryObject.__init__(self, path, mode, temporary, parent)
+
+    # Collection methods start
+
+    def __getitem__(self, key):
+        return self.resources[self.aliases[key]]
+
+    def __setitem__(self, key, value):
+        self.aliases[key] = self.resources.index(value)
+
+    def __delitem__(self, key):
+        del self.aliases[key]
+
+    def __iter__(self):
+        return iter(self.aliases)
+
+    def __len__(self):
+        return len(self.aliases)
+
+    # Collection methods end
+
+    def pop(self, idx):
+        '''Return resource on "idx" index and delete it then'''
+
+        self.resources[idx]._parent = None
+        return self.resources.pop(idx)
+
+
 class ResourceManager(object):
     default_aliases = ["Mercury", "Venus", "Earth", "Mars", "Jupiter",
                        "Saturn", "Uranus", "Neptune", "Plutone"]
@@ -470,10 +501,12 @@ class ResourceManager(object):
 
         self.base_path = os.path.abspath(base_path)
         self.temporary = temporary
-        self.resources = OrderedDict()
         DirectoryObject(self.base_path, mode)
         self.prefix_path = tempfile.mkdtemp(prefix=self.base_path + "/") \
             if rand_prefix else self.base_path
+        self.resources = AliasedDirectoryObject(self.prefix_path, mode,
+                                                temporary)
+        self.current_directory = self.resources
 
     def __del__(self):
         if self.temporary and os.path.exists(self.prefix_path):
@@ -511,11 +544,12 @@ class ResourceManager(object):
         @return: FileObject/DirectoryObject resource
         '''
 
-        if alias in self.resources:
-            if not os.path.exists(self.resources[alias].path):
+        if alias in self.current_directory:
+            if not os.path.exists(self.current_directory[alias].path):
                 log.warning("There is no such resource at {}".
-                            format(self.resources[alias]))
-            return self.resources[alias]
+                            format(self.current_directory[alias].path))
+
+            return self.current_directory[alias]
 
     def file(self, alias):
         '''
@@ -526,12 +560,13 @@ class ResourceManager(object):
         @return: FileObject resource
         '''
 
-        if alias in self.resources and isinstance(self.resources[alias],
-                                                  FileObject):
-            if not os.path.exists(self.resources[alias].path):
+        if alias in self.current_directory and \
+                isinstance(self.current_directory[alias], FileObject):
+            if not os.path.exists(self.current_directory[alias].path):
                 log.warning("There is no such file at {}".
-                            format(self.resources[alias]))
-            return self.resources[alias]
+                            format(self.current_directory[alias]))
+
+            return self.current_directory[alias]
 
     def dir(self, alias):
         '''
@@ -542,12 +577,34 @@ class ResourceManager(object):
         @return: DirectoryObject resource
         '''
 
-        if alias in self.resources and isinstance(self.resources[alias],
-                                                  DirectoryObject):
-            if not os.path.exists(self.resources[alias].path):
+        if alias in self.current_directory and \
+                isinstance(self.current_directory[alias], DirectoryObject):
+            if not os.path.exists(self.current_directory[alias].path):
                 log.warning("There is no such directory at {}".
-                            format(self.resources[alias]))
-            return self.resources[alias]
+                            format(self.current_directory[alias]))
+
+            return self.current_directory[alias]
+
+    def cd(self, alias):
+        '''
+        Switch prefix path
+
+        @param alias: Alias of new prefix path
+        @type alias: L{str}
+        '''
+
+        if self.dir(alias) is not None:
+            self.prefix_path = self.dir(alias).path
+            self.current_directory = self.dir(alias)
+        else:
+            log.info("There is no such alias '{}'".format(alias))
+
+    def back(self):
+        '''Switch prefix path to parent'''
+
+        if self.current_directory.parent:
+            self.prefix_path = self.abspath(self.current_directory.parent.path)
+            self.current_directory = self.current_directory.parent
 
     @contextmanager
     def open(self, alias, mode="r"):
@@ -566,10 +623,7 @@ class ResourceManager(object):
         '''CAUTION: Remove all the resources under prefix path'''
 
         try:
-            shutil.rmtree(self.prefix_path)
-            for el in self.resources.values():
-                if os.path.exists(el.path):
-                    shutil.rmtree(el.path)
+            shutil.rmtree(self.resources.path)
         except IOError as exc:
             log.error("Can't remove prefix path")
             raise exc
@@ -617,10 +671,14 @@ class ResourceManager(object):
         else:
             _path = path
 
-        abs_path = self.abspath(_path)
-        self._prepare(abs_path)
-        self.resources[_alias] = FileObject(abs_path, mode=mode,
-                                            temporary=temporary)
+        if self.resource(_alias):
+            log.info("File hasn't been created. "
+                     "There is already such an alias '{}'".format(_alias))
+        else:
+            abs_path = self.abspath(_path)
+            self._prepare(abs_path)
+            self.current_directory[_alias] = FileObject(abs_path, mode, temporary,
+                                                self.current_directory)
 
     def mkdir(self, alias=None, path=None, mode=0o700, temporary=False):
         '''
@@ -643,10 +701,15 @@ class ResourceManager(object):
         else:
             _path = path
 
-        abs_path = self.abspath(_path)
-        self._prepare(abs_path)
-        self.resources[_alias] = DirectoryObject(abs_path, mode=mode,
-                                                 temporary=temporary)
+        if self.resource(_alias):
+            log.info("Directory hasn't been created. "
+                     "There is already such an alias '{}'".format(_alias))
+        else:
+            abs_path = self.abspath(_path)
+            self._prepare(abs_path)
+            self.current_directory[_alias] = \
+                AliasedDirectoryObject(abs_path, mode, temporary,
+                                       self.current_directory)
 
     def chmod(self, alias, mode):
         '''
@@ -659,7 +722,7 @@ class ResourceManager(object):
         '''
 
         if self.resource(alias) is not None:
-            self.resources[alias].chmod(mode)
+            self.current_directory[alias].chmod(mode)
 
     def rm(self, alias):
         '''
@@ -670,8 +733,8 @@ class ResourceManager(object):
         '''
 
         if self.resource(alias) is not None:
-            self.resources[alias].remove()
-            del self.resources[alias]
+            self.current_directory[alias].remove()
+            del self.current_directory[alias]
 
     def cp(self, alias, dst):
         '''
@@ -685,7 +748,7 @@ class ResourceManager(object):
 
         if self.resource(alias) is not None:
             self._prepare(self.abspath(dst))
-            self.resources[alias].copy(self.abspath(dst))
+            self.current_directory[alias].copy(self.abspath(dst))
 
     def mv(self, alias, dst):
         '''
@@ -699,22 +762,22 @@ class ResourceManager(object):
 
         if self.resource(alias) is not None:
             self._prepare(self.abspath(dst))
-            self.resources[alias].copy(self.abspath(dst))
+            self.current_directory[alias].move(self.abspath(dst))
 
     def ls(self):
         '''List all the resources under prefix'''
 
-        if not self.resources:
+        if not self.current_directory:
             return "No one resource has been created yet"
 
         res = ""
         dash = " ------- "
 
-        max_len = len(max(self.resources.keys(), key=len))
+        max_len = len(max(self.current_directory.keys(), key=len))
         max_tabs = max_len / 8
         max_tabs += 1 if max_len % 8 else 0
 
-        for key, val in self.resources.iteritems():
+        for key, val in self.current_directory.iteritems():
             tabs_n = max_tabs - len(key) / 8
             tabs = "\t" * tabs_n
             type = "[File]\t\t" if isinstance(val, FileObject) \

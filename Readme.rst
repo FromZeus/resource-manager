@@ -25,7 +25,7 @@ For example, you can inherit your class from ``ResourceManager`` class
 ``...``
 
 ``class Foo(ResourceManager, ...):``
-  ``ResourceManager.__init__(self, base_path="/some/base", mode=0o644, temporary=True, rand_prefix=True)``
+  ``ResourceManager.__init__(self, base_path="/some/base", mode=0o744, temporary=True, rand_prefix=True)``
     ``...``
 
 Or you can just use it as an object
@@ -34,5 +34,19 @@ Or you can just use it as an object
 
 ``...``
 
-``rm = ResourceManager(base_path="/some/base", mode=0o644, temporary=True, rand_prefix=True)``
-``rm.mkdir("some_alias", "some_path", )``
+``with ResourceManager(base_path="/some/base", mode=0o744, temporary=True, rand_prefix=True) as rm:``
+  ``rm.mkdir("alias", "path", "mode", "is_temporary")``
+
+  ``rm.cd("path")``
+
+  ``rm.mkfile("alias", "file_name", "is_temporary")``
+
+  ``rm.ls()``
+
+  ``rm.back()``
+
+  ``rm.ls()``
+
+  ``rm.rm("alias")``
+
+There is much more inside :)
